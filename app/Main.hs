@@ -16,16 +16,21 @@ import Raylib.Util.Math
 data Particle = Particle
   { currentPos :: Vector2,
     lastPos :: Vector2,
-    mass :: Float
+    initialPos :: Vector2,
+    isFixed :: Bool
   }
   deriving (Show, Eq)
 
 data Constraint = Constraint
   { particle1Idx :: Int,
-    particle2Idx :: Int,
-    length :: Float
+    particle2Idx :: Int
   }
   deriving (Show, Eq)
+
+data Cloth = Cloth
+  { clothParticles :: V.Vector Particle,
+    clothConstraints :: V.Vector Constraint
+  }
 
 data AppState = AppState
   { resources :: WindowResources,
@@ -37,30 +42,35 @@ startup :: IO AppState
 startup = do
   window <- initWindow 800 600 "Verlet integration"
   setTargetFPS 60
-  let initialParticles =
-        V.fromList
-          [ Particle (Vector2 20 20) (Vector2 20 20) 1,
-            Particle (Vector2 80 20) (Vector2 80 20) 1,
-            Particle (Vector2 80 60) (Vector2 80 60) 1,
-            Particle (Vector2 20 60) (Vector2 20 60) 1
-          ]
+
+  let cloth = createCloth 600 400 20 100 10
   return
     ( AppState
         { resources = window,
-          particles = initialParticles,
-          constraints =
-            V.fromList
-              [ createConstraint initialParticles 0 1,
-                createConstraint initialParticles 1 2,
-                createConstraint initialParticles 2 3,
-                createConstraint initialParticles 3 0
-              ]
+          particles = clothParticles cloth,
+          constraints = clothConstraints cloth
         }
     )
 
-createConstraint :: V.Vector Particle -> Int -> Int -> Constraint
-createConstraint particleVector idx1 idx2 =
-  Constraint idx1 idx2 (vectorDistance (currentPos (particleVector V.! idx1)) (currentPos (particleVector V.! idx2)))
+createCloth :: Int -> Int -> Int -> Int -> Int -> Cloth
+createCloth pixelWidth pixelHeight spacing startX startY = do
+  let width = div pixelWidth spacing
+  let height = div pixelHeight spacing
+
+  let horizontalConstraints = [Constraint (i - 1) i | y <- [0 .. height], x <- [1 .. width], let i = y * (width + 1) + x]
+  let verticalConstraints = [Constraint (i - (width + 1)) i | y <- [1 .. height], x <- [0 .. width], let i = y * (width + 1) + x]
+
+  let constraints = V.fromList (horizontalConstraints ++ verticalConstraints)
+  let particles = V.generate ((width + 1) * (height + 1)) (createParticle spacing startX startY width)
+
+  Cloth {clothParticles = particles, clothConstraints = constraints}
+
+createParticle :: Int -> Int -> Int -> Int -> Int -> Particle
+createParticle spacing startX startY width idx = do
+  let (y, x) = divMod idx (width + 1)
+  let pos = Vector2 (fromIntegral (startX + x * spacing)) (fromIntegral (startY + y * spacing))
+
+  Particle {initialPos = pos, currentPos = pos, lastPos = pos, isFixed = y == 0}
 
 mainLoop :: AppState -> IO AppState
 mainLoop state = do
@@ -68,8 +78,8 @@ mainLoop state = do
   drawing
     ( do
         clearBackground rayWhite
-        drawText "Basic raylib window" 20 40 18 lightGray
-        mapM_ (\(Particle pos _ _) -> drawCircleV pos 5 red) (particles state)
+
+        mapM_ (\(Particle pos _ _ _) -> drawCircleV pos 5 red) (particles state)
         mapM_ (drawConstraint (particles state)) (constraints state)
     )
     >> return
@@ -78,7 +88,7 @@ mainLoop state = do
         }
 
 drawConstraint :: V.Vector Particle -> Constraint -> IO ()
-drawConstraint particles (Constraint idx1 idx2 _) = do
+drawConstraint particles (Constraint idx1 idx2) = do
   let p1 = particles V.! idx1
   let p2 = particles V.! idx2
 
@@ -86,8 +96,7 @@ drawConstraint particles (Constraint idx1 idx2 _) = do
 
 updateParticle :: Float -> Particle -> Particle
 updateParticle dt particle = do
-  let force = Vector2 0 10
-  let acceleration = force |/ mass particle
+  let acceleration = Vector2 0 98
 
   let nextPosition = (currentPos particle |* 2) |-| lastPos particle |+| (acceleration |* (dt * dt))
 
@@ -101,13 +110,15 @@ applyConstraints particles constraints =
   V.foldl' applyConstraint particles constraints
 
 applyConstraint :: V.Vector Particle -> Constraint -> V.Vector Particle
-applyConstraint particles (Constraint idx1 idx2 consLength) = do
+applyConstraint particles (Constraint idx1 idx2) = do
   let p1 = particles V.! idx1
   let p2 = particles V.! idx2
 
+  let spacing = 20
+
   let diff = currentPos p1 |-| currentPos p2
   let currentLength = magnitude diff
-  let diffFactor = (consLength - currentLength) / currentLength * 0.5
+  let diffFactor = (spacing - currentLength) / currentLength * 0.5
   let offset = diff |* diffFactor
 
   let newP1 = p1 {currentPos = currentPos p1 |+| offset}
